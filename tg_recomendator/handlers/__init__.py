@@ -10,3 +10,10 @@ def register_handlers(dp):
     register_categories_handlers(dp)
     register_search_handlers(dp)
     register_trending_handlers(dp)
+
+
+
+
+
+
+
