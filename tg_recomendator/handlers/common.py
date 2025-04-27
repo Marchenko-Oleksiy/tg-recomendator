@@ -1,35 +1,34 @@
 from aiogram import types, Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from utils import db 
-from keyboards.keyboards import main_menu_keyboard
+from utils import db
+from keyboards import main_menu_keyboard
 from utils.constants import *
 
-
+# Створюємо роутер для обробників загальних команд
 common_router = Router()
 
 @common_router.message(Command(commands=[START_COMMAND]))
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear() 
+    """Обробник команди /start"""
+    # Скидаємо будь-який попередній стан
+    await state.clear()
     
+    # Додаємо або оновлюємо інформацію про користувача
     user = message.from_user
     db.add_user(user.id, user.username, user.first_name, user.last_name)
     
     welcome_text = (
-        f"👋 Привіт, {user.first_name}!\n\n"
-        f"🎬 Вітаємо в нашому  боті Рекомендаторі для перегляду фільмів та серіалів!\n\n"
-        f"🎈 Ось що я можу для тебе зробити:\n\n"
-        f"🔍 Пошук фільмів та серіалів за категоріями та жанрами\n"
-        f"🔍 Перегляд трендових фільмів та серіалів\n"
-        f"🔍 Додавання власних фільмів та серіалів для перегляду\n\n"
+        f"👋 Вітаю, {user.first_name}!\n\n"
+        f"Я бот, який допоможе знайти фільми, серіали та мультсеріали для перегляду.\n\n"
         f"Використовуйте кнопки меню для навігації."
     )
-    
-    await message.answer(welcome_text, reply_markup=main_menu_keyboard)
+    await message.answer(welcome_text, reply_markup=main_menu_keyboard())
 
 @common_router.message(Command(commands=[HELP_COMMAND]))
-@common_router.message(F.text == "❓Допомога")
+@common_router.message(F.text == "❓ Допомога")
 async def cmd_help(message: types.Message):
+    """Обробник команди /help"""
     help_text = (
         "🔍 <b>Як користуватись ботом:</b>\n\n"
         "• <b>Категорії</b> - перегляд фільмів/серіалів за категоріями та жанрами\n"
@@ -41,16 +40,15 @@ async def cmd_help(message: types.Message):
         "/categories - перегляд категорій\n"
         "/trending - популярні фільми і серіали\n"
         "/search - пошук за назвою\n"
-    )   
-    
+    )
     await message.answer(help_text, parse_mode="HTML")
 
-@common_router.message(F.text == "🔙Назад до меню")
-async def back_to_main(message: types.Message, state: FSMContext):
+@common_router.message(F.text == "🔙 Назад до меню")
+async def process_back_to_menu(message: types.Message, state: FSMContext):
+    """Обробник кнопки повернення до головного меню"""
     await state.clear()
-    await message.answer("Повертаємось до головного меню", 
-                         reply_markup=main_menu_keyboard())
-
+    await message.answer("Повертаємось до головного меню", reply_markup=main_menu_keyboard())
 
 def register_common_handlers(dp):
-    dp.include_router(common_router)
+    """Реєстрація обробників загальних команд"""
+    dp.include_router(common_router) 
