@@ -171,3 +171,69 @@ class Database:
             result = False
         self.disconnect()
         return result
+    
+    def add_genre(self, name, api_id, category_id):
+        self.connect()
+        try:
+            self.cursor.executre('''
+                INSERT INTO genres (name, api_id, category_id) VALUES (?, ?, ?)
+            ''', (name, api_id, category_id))
+            self.conn.commit()
+            result = True
+        except sqlite3.IntegrityError as e:
+            result = False
+        self.disconnect()
+        return result
+    
+    def get_genres(self, category_id=None):
+        self.connect()
+        if category_id:
+            self.cursor.execute('''
+                SELECT id, name FROM genres WHERE category_id = ?
+            ''', (category_id,))
+        else:
+            self.cursor.execute("SELECT id, name FROM genres")
+        genres = self.cursor.fetchall()
+        self.disconnect()
+        return [{"id": g[0], "name": g[1], "api_id": g[2]} for g in genres]
+    
+    def add_custom_media(self, title, description, poster_url, genre_ids, media_type, added_by):
+        self.connect()
+        genre_ids = json.dumps(genre_ids)
+        self.cursor.execute('''
+            INSERT INTO custom media
+            (title, description, poster_url, genre_id, media_type, added_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (title, description, poster_url, genre_ids, media_type, added_by))
+        self.conn.commit()
+        self.disconnect()
+        
+    def get_custom_media(self, media_type=None, genre_id=None):
+        self.connect()
+        query = '''
+            SELECT id, title, description, poster_url, genre_ids, media_type FROM custom_media
+        '''
+        params = []
+        if media_type:
+            query += ' WHERE media_type = ?'
+            params.append(media_type)
+        if genre_id:
+            if media_type:
+                query += ' AND'
+            query += " json_extract(genre_ids, '$') LIKE ?"
+            params.append(f'%{genre_id}%')
+        
+        self.cursor.execute(query, params)
+        media = self.cursor.fetchall()
+        self.disconnect()
+        
+        return [{
+            "id": m[0],
+            "title": m[1],
+            "description": m[2],
+            "poster_url": m[3],
+            "genre_ids": json.loads(m[4]) if m[4] else [],
+            "media_type": m[5]
+        } for m in media]
+        
+db = Database()
