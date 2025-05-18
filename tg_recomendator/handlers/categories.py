@@ -1,6 +1,8 @@
 from aiogram import types, Router, F
+from aiogram import exceptions
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+import logging
 from utils import db, get_genres, discover_by_genre
 from keyboards import categories_inline_keyboard, genres_inline_keyboard, media_list_keyboard
 from utils.constants import *
@@ -42,34 +44,64 @@ async def callback_category_selected(callback_query: types.CallbackQuery):
     if not genres:
         # Визначаємо тип медіа для запиту до API
         if category_id == 1:  # Фільми
-            media_type = "movie"
+            media_type = MOVIE
         elif category_id == 2:  # Серіали
-            media_type = "tv"
+            media_type = TV
+        elif category_id == 3:  # Мультфільми
+            # Для мультфільмів будемо використовувати режим фільмів
+            # і додаткові фільтри в подальшому
+            media_type = MOVIE
         else:
-            media_type = "movie"  # За замовчуванням
+            media_type = MOVIE  # За замовчуванням
         
         # Отримуємо жанри з API
         api_genres = await get_genres(media_type)
         
-        if "genres" in api_genres:
+        if api_genres and "genres" in api_genres:
             for genre in api_genres["genres"]:
                 # Додаємо жанри до бази даних
                 db.add_genre(genre["name"], genre["id"], category_id)
             
             # Оновлюємо список жанрів
             genres = db.get_genres(category_id)
+        
+            # Для мультфільмів, додатково додамо жанр анімації, якщо його немає
+            if category_id == 3 and api_genres["genres"]:
+                # ID для жанру анімації в TMDB API
+                animation_genre_id = 16  # "Animation" жанр у TMDB
+                
+                # Перевіряємо, чи є вже цей жанр у базі
+                has_animation_genre = False
+                for genre in genres:
+                    if genre["api_id"] == animation_genre_id:
+                        has_animation_genre = True
+                        break
+                
+                # Якщо немає, додаємо
+                if not has_animation_genre:
+                    db.add_genre("Анімація", animation_genre_id, category_id)
+                    # Оновлюємо список жанрів
+                    genres = db.get_genres(category_id)
     
     if not genres:
-        await callback_query.message.edit_text(
-            "На жаль, жанри для цієї категорії не знайдено.",
-            reply_markup=categories_inline_keyboard(db.get_categories())
-        )
-        return
+        text = "На жаль, жанри для цієї категорії не знайдено."
+        markup = categories_inline_keyboard(db.get_categories())
+    else:
+        text = "Оберіть жанр:"
+        markup = genres_inline_keyboard(genres, category_id)
     
-    await callback_query.message.edit_text(
-        "Оберіть жанр:",
-        reply_markup=genres_inline_keyboard(genres, category_id)
-    )
+    try:
+        await callback_query.message.edit_text(text, reply_markup=markup)
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Повідомлення не змінено, ігноруємо
+            pass
+        elif "message to edit not found" in str(e):
+            # Повідомлення не знайдено, створюємо нове
+            await callback_query.message.answer(text, reply_markup=markup)
+        else:
+            # Інші помилки перевидаємо
+            raise
 
 @categories_router.callback_query(lambda c: c.data.startswith("genre_"))
 async def callback_genre_selected(callback_query: types.CallbackQuery):
@@ -83,11 +115,13 @@ async def callback_genre_selected(callback_query: types.CallbackQuery):
     
     # Визначаємо тип медіа за категорією
     if category_id == 1:  # Фільми
-        media_type = "movie"
+        media_type = MOVIE
     elif category_id == 2:  # Серіали
-        media_type = "tv"
+        media_type = TV
+    elif category_id == 3:  # Мультфільми
+        media_type = MOVIE  # Будемо використовувати тип фільмів для мультфільмів
     else:
-        media_type = "movie"  # За замовчуванням
+        media_type = MOVIE  # За замовчуванням
     
     # Отримуємо API_ID для жанру
     genres = db.get_genres(category_id)
@@ -99,20 +133,44 @@ async def callback_genre_selected(callback_query: types.CallbackQuery):
             break
     
     if not api_genre_id:
-        await callback_query.message.edit_text(
-            "Помилка: жанр не знайдено.",
-            reply_markup=genres_inline_keyboard(genres, category_id)
-        )
+        text = "Помилка: жанр не знайдено."
+        markup = genres_inline_keyboard(genres, category_id)
+        try:
+            await callback_query.message.edit_text(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            elif "message to edit not found" in str(e):
+                await callback_query.message.answer(text, reply_markup=markup)
+            else:
+                raise
         return
     
     # Отримуємо фільми/серіали за жанром з API
-    result = await discover_by_genre(media_type, api_genre_id, page=1)
+    # Для категорії "Мультфільми" додаємо анімаційний жанр у запит
+    if category_id == 3:  # Мультфільми
+        animation_genre_id = 16  # ID жанру "Animation" у TMDB
+        # Якщо вже обраний жанр анімації, не треба додавати додатковий фільтр
+        if api_genre_id != animation_genre_id:
+            # Тут ми вказуємо обидва жанри для пошуку
+            result = await discover_by_genre(media_type, f"{animation_genre_id},{api_genre_id}", page=1)
+        else:
+            result = await discover_by_genre(media_type, api_genre_id, page=1)
+    else:
+        result = await discover_by_genre(media_type, api_genre_id, page=1)
     
     if not result or "results" not in result or not result["results"]:
-        await callback_query.message.edit_text(
-            "На жаль, не знайдено фільмів/серіалів за обраним жанром.",
-            reply_markup=genres_inline_keyboard(genres, category_id)
-        )
+        text = "На жаль, не знайдено фільмів/серіалів за обраним жанром."
+        markup = genres_inline_keyboard(genres, category_id)
+        try:
+            await callback_query.message.edit_text(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            elif "message to edit not found" in str(e):
+                await callback_query.message.answer(text, reply_markup=markup)
+            else:
+                raise
         return
     
     # Формуємо текст з результатами
@@ -133,14 +191,22 @@ async def callback_genre_selected(callback_query: types.CallbackQuery):
         page=1, 
         max_page=min(result["total_pages"], 1000), 
         media_type=media_type, 
-        genre_id=api_genre_id
+        genre_id=api_genre_id if category_id != 3 else f"{animation_genre_id},{api_genre_id}" if api_genre_id != 16 else "16"
     )
     
-    await callback_query.message.edit_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+    try:
+        await callback_query.message.edit_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass
+        elif "message to edit not found" in str(e):
+            await callback_query.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            raise
 
 @categories_router.callback_query(lambda c: c.data == "back_to_categories")
 async def callback_back_to_categories(callback_query: types.CallbackQuery):
@@ -149,16 +215,27 @@ async def callback_back_to_categories(callback_query: types.CallbackQuery):
     
     categories = db.get_categories()
     
-    await callback_query.message.edit_text(
-        "Оберіть категорію:",
-        reply_markup=categories_inline_keyboard(categories)
-    )
+    try:
+        await callback_query.message.edit_text(
+            "Оберіть категорію:",
+            reply_markup=categories_inline_keyboard(categories)
+        )
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass
+        elif "message to edit not found" in str(e):
+            await callback_query.message.answer("Оберіть категорію:", reply_markup=categories_inline_keyboard(categories))
+        else:
+            raise
 
 @categories_router.callback_query(lambda c: c.data == "back_to_main")
 async def callback_back_to_main(callback_query: types.CallbackQuery):
     """Обробник повернення до головного меню"""
     await callback_query.answer()
-    await callback_query.message.delete()
+    try:
+        await callback_query.message.delete()
+    except Exception as e:
+        logging.error(f"Помилка при видаленні повідомлення: {e}")
     await callback_query.message.answer("Головне меню")
 
 @categories_router.callback_query(lambda c: c.data.startswith("page_") and len(c.data.split("_")) > 2)
@@ -177,23 +254,37 @@ async def callback_page_navigation(callback_query: types.CallbackQuery):
         media_type = parts[2]
     
     if len(parts) > 3:
-        genre_id = int(parts[3])
+        genre_id = parts[3]  # Може містити кілька ID через кому
     
     if not media_type or not genre_id:
-        await callback_query.message.edit_text(
-            "Помилка: недостатньо даних для навігації.",
-            reply_markup=None
-        )
+        text = "Помилка: недостатньо даних для навігації."
+        markup = None
+        try:
+            await callback_query.message.edit_text(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            elif "message to edit not found" in str(e):
+                await callback_query.message.answer(text)
+            else:
+                raise
         return
     
     # Отримуємо результати для нової сторінки
     result = await discover_by_genre(media_type, genre_id, page=page)
     
     if not result or "results" not in result or not result["results"]:
-        await callback_query.message.edit_text(
-            "На жаль, не знайдено фільмів/серіалів для цієї сторінки.",
-            reply_markup=None
-        )
+        text = "На жаль, не знайдено фільмів/серіалів для цієї сторінки."
+        markup = None
+        try:
+            await callback_query.message.edit_text(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass
+            elif "message to edit not found" in str(e):
+                await callback_query.message.answer(text)
+            else:
+                raise
         return
     
     # Формуємо текст з результатами
@@ -217,11 +308,19 @@ async def callback_page_navigation(callback_query: types.CallbackQuery):
         genre_id=genre_id
     )
     
-    await callback_query.message.edit_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+    try:
+        await callback_query.message.edit_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass
+        elif "message to edit not found" in str(e):
+            await callback_query.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            raise
 
 @categories_router.callback_query(lambda c: c.data.startswith("back_to_genres_"))
 async def callback_back_to_genres(callback_query: types.CallbackQuery):
@@ -234,18 +333,26 @@ async def callback_back_to_genres(callback_query: types.CallbackQuery):
     # Визначаємо ID категорії за типом медіа
     category_id = 1  # За замовчуванням - фільми
     
-    if media_type == "tv":
+    if media_type == TV:
         category_id = 2
-    elif media_type == "animation":
+    elif media_type == ANIMATION:
         category_id = 3
     
     # Отримуємо жанри для цієї категорії
     genres = db.get_genres(category_id)
     
-    await callback_query.message.edit_text(
-        "Оберіть жанр:",
-        reply_markup=genres_inline_keyboard(genres, category_id)
-    )
+    try:
+        await callback_query.message.edit_text(
+            "Оберіть жанр:",
+            reply_markup=genres_inline_keyboard(genres, category_id)
+        )
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass
+        elif "message to edit not found" in str(e):
+            await callback_query.message.answer("Оберіть жанр:", reply_markup=genres_inline_keyboard(genres, category_id))
+        else:
+            raise
 
 def register_categories_handlers(dp):
     """Реєстрація обробників для категорій та жанрів"""
